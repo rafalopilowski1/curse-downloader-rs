@@ -1,0 +1,7 @@
+[package]
+name = "curse-downloader-rs"
+version = "0.1.0"
+authors = ["Rafał Opiłowski <rafalopilowski1@outlook.com>"]
+edition = "2018"
+
+[dependencies]
