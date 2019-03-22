@@ -5,3 +5,16 @@ authors = ["Rafał Opiłowski <rafalopilowski1@outlook.com>"]
 edition = "2018"
 
 [dependencies]
+serde="*"
+serde_derive="*"
+serde_json="*"
+reqwest="*"
+tokio="*"
+futures="*"
+bytes = "*"
+regex="*"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 'z'
