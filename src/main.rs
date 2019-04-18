@@ -1,18 +1,17 @@
 extern crate futures;
 extern crate regex;
+extern crate reqwest;
 extern crate serde;
-extern crate tokio;
-
 #[macro_use]
 extern crate serde_derive;
-extern crate reqwest;
 extern crate serde_json;
+extern crate tokio;
 
-use reqwest::r#async::*;
 use std::env;
 use std::fs::File;
 use std::io::BufReader;
-use std::sync::Arc;
+
+use reqwest::r#async::*;
 use tokio::prelude::*;
 
 #[derive(Deserialize)]
@@ -34,11 +33,11 @@ fn main() {
     let buf_reader = BufReader::new(file);
     let mod_pack: Modpack = serde_json::from_reader(buf_reader).unwrap();
     println!("Gathered data. Downloading modfiles...");
-    let client = Arc::new(Client::new());
+    let client = Client::new();
     tokio::run(futures::lazy(move || {
         for mod_file in mod_pack.files {
             tokio::spawn(
-                execute_download(mod_file, client.clone())
+                execute_download(mod_file, &client)
                     .and_then(|(chunk, path)| save_file(chunk, path))
                     .map_err(|e| {
                         println!("{:?}", e);
@@ -51,7 +50,7 @@ fn main() {
 
 fn execute_download(
     mod_file: Modfile,
-    client: Arc<Client>,
+    client: &Client,
 ) -> impl Future<Item = (Chunk, String), Error = ()> {
     let url = format!(
         "https://minecraft.curseforge.com/projects/{0}/files/{1}/download",
