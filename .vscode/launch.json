@@ -4,7 +4,18 @@
   // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
   "version": "0.2.0",
   "configurations": [
+
     {
+      "type": "gdb",
+      "request": "launch",
+      "name": "Launch Program",
+      "target": "./target/debug/curse-downloader-rs",
+      "arguments": "./target/debug/manifest.json",
+      "cwd": "${workspaceRoot}",
+      "valuesFormatting": "parseText"
+    }
+
+    /*{
       "name": "(Windows) Launch",
       "type": "cppvsdbg",
       "request": "launch",
@@ -14,6 +25,6 @@
       "cwd": "${workspaceFolder}/target/debug/",
       "environment": [],
       "externalConsole": true
-    }
+    }*/
   ]
 }
