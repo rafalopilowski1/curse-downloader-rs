@@ -49,53 +49,75 @@ fn main() {
     println!("Gathered data. Downloading modfiles...");
     tokio::run(futures::lazy(move || {
         for mod_file in mod_pack.files {
-            tokio::spawn({
-                gather_metadata(mod_file, &client)
-                    .and_then(|(name_dom, md5, url)| {
-                        check_integrity(name_dom, md5).and_then(
-                            |(file_option, file_path_option): (
-                                Option<tokio::fs::File>,
-                                Option<String>,
-                            )| {
-                                download_mod_file(url, &client).and_then(|chunk| {
-                                    save_file(chunk, file_option, file_path_option)
-                                        .and_then(|_| Ok(()))
-                                });
-                            },
-                        )
-                    })
-                    .map_err(|e| eprintln!("{:?}", e))
-            })
+            tokio::spawn(
+                gather_metadata(mod_file, &client).and_then(|(name_dom, md5, url)| {
+                    check_integrity(name_dom, md5).and_then(
+                        |(file_option, file_path_option): (
+                            Option<tokio::fs::File>,
+                            Option<String>,
+                        )| {
+                            if file_option.is_some() {
+                                let mut file = file_option.unwrap();
+                                let file_path = file_path_option.unwrap();
+                                download_mod_file(url, &client)
+                                    .and_then(|mut chunk| save_file(file, chunk))
+                            } else {
+                                already().and_then(|_| Ok(()))
+                            }
+                            //Ok(()).into_future()
+                        },
+                    )
+                }),
+            );
         }
+        Ok(())
     }));
+}
+
+fn save_file(mut file: tokio::fs::File, mut chunk: Chunk) -> impl Future<Item = (), Error = ()> {
+    file.write_buf(&mut chunk)
+        .and_then(|_| Ok(()))
+        .map_err(|e| eprintln!("{:?}", e))
+}
+
+fn done_print(file_path: String) -> impl Future<Item = (), Error = ()> {
+    Ok(println!("{} <- Done!", file_path)).into_future()
+}
+
+fn already() -> impl Future<Item = (), Error = ()> {
+    Ok(println!("Already downloaded!")).into_future()
 }
 
 fn gather_metadata(
     mod_file: Modfile,
     client: &Client,
-) -> impl Future<Item = (String, String, String), Error = reqwest::Error> {
+) -> impl Future<Item = (String, String, String), Error = ()> {
     let url = format!(
         "https://minecraft.curseforge.com/projects/{0}/files/{1}",
         mod_file.projectID, mod_file.fileID
     );
-    client.get(&url).send().and_then(|response| {
-        response.into_body().from_err().concat2().and_then(|body| {
-            let bytes = body.to_tendril();
-            let html = kuchiki::parse_html().from_utf8().one(bytes);
-            let name_dom = html
-                .select_first(".info-data .overflow-tip")
-                .unwrap()
-                .text_contents();
-            let md5 = html.select_first(".md5").unwrap().text_contents();
-            Ok((name_dom, md5, url))
+    client
+        .get(&url)
+        .send()
+        .and_then(|response| {
+            response.into_body().from_err().concat2().and_then(|body| {
+                let bytes = body.to_tendril();
+                let html = kuchiki::parse_html().from_utf8().one(bytes);
+                let name_dom = html
+                    .select_first(".info-data .overflow-tip")
+                    .unwrap()
+                    .text_contents();
+                let md5 = html.select_first(".md5").unwrap().text_contents();
+                Ok((name_dom, md5, url))
+            })
         })
-    })
+        .map_err(|e| eprintln!("{:?}", e))
 }
 
 fn check_integrity(
     name_dom: String,
     md5: String,
-) -> impl Future<Item = (Option<tokio::fs::File>, Option<String>), Error = std::io::Error> {
+) -> impl Future<Item = (Option<tokio::fs::File>, Option<String>), Error = ()> {
     tokio::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -111,35 +133,20 @@ fn check_integrity(
                 }
             })
         })
+        .map_err(|e| eprintln!("{:?}", e))
 }
 
-fn download_mod_file(
-    url: String,
-    client: &Client,
-) -> impl Future<Item = Chunk, Error = reqwest::Error> {
+fn download_mod_file(url: String, client: &Client) -> impl Future<Item = Chunk, Error = ()> {
     let url_to_download = url.add("/download");
-    client.get(&url_to_download).send().and_then(|response| {
-        response
-            .into_body()
-            .from_err()
-            .concat2()
-            .and_then(|body| Ok(body))
-    })
-}
-
-fn save_file(
-    file_body: Chunk,
-    file_option: Option<tokio::fs::File>,
-    file_path_option: Option<String>,
-) -> impl Future<Item = (), Error = std::io::Error> {
-    if file_option.is_some() {
-        let mut file = file_option.unwrap();
-        let file_path = file_path_option.unwrap();
-        file.poll_write(&*file_body).and_then(|_| {
-            println!("{} <- Done!", file_path);
-            Ok(())
+    client
+        .get(&url_to_download)
+        .send()
+        .and_then(|response| {
+            response
+                .into_body()
+                .from_err()
+                .concat2()
+                .and_then(|body| Ok(body))
         })
-    } else {
-        Ok(())
-    }
+        .map_err(|e| eprintln!("{:?}", e))
 }
