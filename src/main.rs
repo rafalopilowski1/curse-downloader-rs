@@ -17,7 +17,7 @@ use std::ops::Add;
 use reqwest::r#async::*;
 use tendril::fmt::Slice;
 use tendril::stream::TendrilSink;
-use tokio::prelude::future::Either;
+use tokio::prelude::future::{result, Either};
 use tokio::prelude::*;
 
 use crate::tendril::SliceExt;
@@ -49,8 +49,12 @@ fn main() {
     println!("Gathered data. Downloading modfiles...");
     tokio::run(futures::lazy(move || {
         for mod_file in mod_pack.files {
-            tokio::spawn({
-                gather_metadata(mod_file, &client)
+            let url = format!(
+                "https://minecraft.curseforge.com/projects/{0}/files/{1}",
+                mod_file.projectID, mod_file.fileID
+            );
+            tokio::spawn(
+                gather_metadata(mod_file, &client, url)
                     .and_then(|(name_dom, md5, url)| {
                         check_integrity(name_dom, md5).and_then(
                             |(file_option, file_path_option): (
@@ -58,14 +62,13 @@ fn main() {
                                 Option<String>,
                             )| {
                                 download_mod_file(url, &client).and_then(|chunk| {
-                                    save_file(chunk, file_option, file_path_option)
-                                        .and_then(|_| Ok(()))
+                                    //save_file(chunk, file_option, file_path_option).and_then(|_| Ok(()))
                                 });
                             },
                         )
                     })
-                    .map_err(|e| eprintln!("{:?}", e))
-            })
+                    .map_err(|e| eprintln!("{:?}", e)),
+            )
         }
     }));
 }
@@ -73,29 +76,30 @@ fn main() {
 fn gather_metadata(
     mod_file: Modfile,
     client: &Client,
-) -> impl Future<Item = (String, String, String), Error = reqwest::Error> {
-    let url = format!(
-        "https://minecraft.curseforge.com/projects/{0}/files/{1}",
-        mod_file.projectID, mod_file.fileID
-    );
-    client.get(&url).send().and_then(|response| {
-        response.into_body().from_err().concat2().and_then(|body| {
-            let bytes = body.to_tendril();
-            let html = kuchiki::parse_html().from_utf8().one(bytes);
-            let name_dom = html
-                .select_first(".info-data .overflow-tip")
-                .unwrap()
-                .text_contents();
-            let md5 = html.select_first(".md5").unwrap().text_contents();
-            Ok((name_dom, md5, url))
+    url: String,
+) -> impl Future<Item = (String, String, String), Error = ()> {
+    client
+        .get(&url)
+        .send()
+        .and_then(|response| {
+            response.into_body().from_err().concat2().and_then(|body| {
+                let bytes = body.to_tendril();
+                let html = kuchiki::parse_html().from_utf8().one(bytes);
+                let name_dom = html
+                    .select_first(".info-data .overflow-tip")
+                    .unwrap()
+                    .text_contents();
+                let md5 = html.select_first(".md5").unwrap().text_contents();
+                Ok((name_dom, md5, url))
+            })
         })
-    })
+        .map_err(|e| eprintln!("{:?}", e))
 }
 
 fn check_integrity(
     name_dom: String,
     md5: String,
-) -> impl Future<Item = (Option<tokio::fs::File>, Option<String>), Error = std::io::Error> {
+) -> impl Future<Item = (Option<tokio::fs::File>, Option<String>), Error = ()> {
     tokio::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -111,23 +115,25 @@ fn check_integrity(
                 }
             })
         })
+        .map_err(|e| eprintln!("{:?}", e))
 }
 
-fn download_mod_file(
-    url: String,
-    client: &Client,
-) -> impl Future<Item = Chunk, Error = reqwest::Error> {
+fn download_mod_file(url: String, client: &Client) -> impl Future<Item = Chunk, Error = ()> {
     let url_to_download = url.add("/download");
-    client.get(&url_to_download).send().and_then(|response| {
-        response
-            .into_body()
-            .from_err()
-            .concat2()
-            .and_then(|body| Ok(body))
-    })
+    client
+        .get(&url_to_download)
+        .send()
+        .and_then(|response| {
+            response
+                .into_body()
+                .from_err()
+                .concat2()
+                .and_then(|body| Ok(body))
+        })
+        .map_err(|e| eprintln!("{:?}", e))
 }
 
-fn save_file(
+/* fn save_file(
     file_body: Chunk,
     file_option: Option<tokio::fs::File>,
     file_path_option: Option<String>,
@@ -142,4 +148,4 @@ fn save_file(
     } else {
         Ok(())
     }
-}
+} */
