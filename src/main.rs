@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use reqwest::r#async::*;
 use tendril::stream::TendrilSink;
-use tokio::prelude::future::Either;
 use tokio::prelude::*;
+use tokio::prelude::future::Either;
 
 use crate::tendril::SliceExt;
 
@@ -104,10 +104,13 @@ fn gather_metadata(
                 let bytes = body.to_tendril();
                 let html = kuchiki::parse_html().from_utf8().one(bytes);
                 let name_dom = html
-                    .select_first(".info-data .overflow-tip")
-                    .unwrap()
+                    .select_first(".info-data.overflow-tip")
+                    .expect("Error while parsing HTML")
                     .text_contents();
-                let md5 = html.select_first(".md5").unwrap().text_contents();
+                let md5 = html
+                    .select_first(".md5")
+                    .expect("Error while parsing HTML")
+                    .text_contents();
                 Ok((name_dom, md5, url))
             })
         })
@@ -118,11 +121,12 @@ fn check_integrity(
     name_dom: String,
     md5: String,
 ) -> impl Future<Item = (Option<tokio::fs::File>, Option<String>), Error = ()> {
+    let path = format!("./mods/{}", name_dom);
     tokio::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .append(true)
-        .open(format!("./mods/{}", name_dom))
+        .create(true)
+        .open(path)
         .and_then(move |mut file| {
             let mut file_bytes: Vec<u8> = vec![];
             file.read_buf(&mut file_bytes).and_then(move |_| {
