@@ -11,14 +11,16 @@ extern crate tendril;
 extern crate tokio;
 
 use std::env;
+use std::error::Error;
 use std::io::BufReader;
 use std::ops::Add;
 use std::sync::Arc;
 
+use md5::{Digest, Md5};
 use reqwest::r#async::*;
 use tendril::stream::TendrilSink;
-use tokio::prelude::*;
 use tokio::prelude::future::Either;
+use tokio::prelude::*;
 
 use crate::tendril::SliceExt;
 
@@ -38,6 +40,12 @@ fn main() {
     let path: &str = &args[1];
     let file = std::fs::File::open(path).expect("opening manifest.json failed!");
     println!("Manifest opened!");
+    if let Err(e) = std::fs::create_dir("mods") {
+        match e.kind() {
+            std::io::ErrorKind::AlreadyExists => println!("'mods' folder already exists..."),
+            _ => eprintln!("Error: {:?}", e.description()),
+        }
+    }
     let buf_reader = BufReader::new(file);
     let client = Arc::new(Client::new());
     let mod_pack: Modpack = serde_json::from_reader(buf_reader).unwrap();
@@ -100,19 +108,21 @@ fn gather_metadata(
         .get(&url)
         .send()
         .and_then(move |response| {
-            response.into_body().from_err().concat2().and_then(|body| {
-                let bytes = body.to_tendril();
-                let html = kuchiki::parse_html().from_utf8().one(bytes);
-                let name_dom = html
-                    .select_first(".info-data.overflow-tip")
-                    .expect("Error while parsing HTML")
-                    .text_contents();
-                let md5 = html
-                    .select_first(".md5")
-                    .expect("Error while parsing HTML")
-                    .text_contents();
-                Ok((name_dom, md5, url))
-            })
+            let error_mes = format!("Error while parsing HTML - {}", &response.url());
+            response
+                .into_body()
+                .from_err()
+                .concat2()
+                .and_then(move |body| {
+                    let bytes = body.to_tendril();
+                    let html = kuchiki::parse_html().from_utf8().one(bytes);
+                    let name_dom = html
+                        .select_first(".info-data.overflow-tip")
+                        .expect(&error_mes)
+                        .text_contents();
+                    let md5 = html.select_first(".md5").expect(&error_mes).text_contents();
+                    Ok((name_dom, md5, url))
+                })
         })
         .map_err(|e| eprintln!("{:?}", e))
 }
@@ -130,7 +140,10 @@ fn check_integrity(
         .and_then(move |mut file| {
             let mut file_bytes: Vec<u8> = vec![];
             file.read_buf(&mut file_bytes).and_then(move |_| {
-                if md5.as_bytes() == file_bytes.as_slice() {
+                let mut hasher = Md5::new();
+                hasher.input(file_bytes);
+                let result = hasher.result();
+                if md5 == format!("{:x}", result) {
                     Ok((None, None))
                 } else {
                     Ok((Some(file), Some(name_dom)))
@@ -153,4 +166,47 @@ fn download_mod_file(url: String, client: Arc<Client>) -> impl Future<Item = Chu
                 .and_then(|body| Ok(body))
         })
         .map_err(|e| eprintln!("{:?}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+    use std::io::Read;
+
+    use md5::{Digest, Md5};
+
+    #[test]
+    fn create_dir_and_file() {
+        if let Err(e) = std::fs::create_dir("mods") {
+            match e.kind() {
+                std::io::ErrorKind::AlreadyExists => (),
+                _ => panic!("Error: {:?}", e.description()),
+            }
+        }
+        if let Err(e) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open("./mods/test.jar")
+        {
+            panic!("Error: {:?}", e.description())
+        }
+    }
+
+    #[test]
+    fn compare_md5() {
+        let mut file = match std::fs::File::open("./mods/EnderIO-1.10.2-3.1.193.jar") {
+            Ok(f) => f,
+            Err(e) => panic!("Error (opening file): {}", e.description()),
+        };
+        let mut bytes: Vec<u8> = vec![];
+        if let Err(e) = file.read_to_end(&mut bytes) {
+            panic!("Error (reading file): {}", e.description())
+        }
+
+        let mut hasher = Md5::new();
+        hasher.input(bytes);
+        let result = hasher.result();
+        assert_eq!("a74fae6755603db91c62a55ad252db20", format!("{:x}", result));
+    }
 }

@@ -15,6 +15,7 @@ futures="*"
 bytes = "*"
 regex="*"
 rustls="*"
-md5 = "*"
+
+md-5 = "0.8.0"
 kuchiki="*"
 tendril="*"
