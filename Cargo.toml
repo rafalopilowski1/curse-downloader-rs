@@ -1,7 +1,7 @@
 [package]
 name = "curse-downloader-rs"
 version = "2.0.0"
-authors = ["Rafa³ Opi³owski <rafalopilowski1@outlook.com>"]
+authors = ["Rafa? Opi?owski <rafalopilowski1@outlook.com>"]
 edition = "2018"
 features = ["rustls-tls"]
 
@@ -15,7 +15,6 @@ futures="*"
 bytes = "*"
 regex="*"
 rustls="*"
-
 md-5 = "0.8.0"
 kuchiki="*"
 tendril="*"

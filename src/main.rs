@@ -97,13 +97,8 @@ fn already() -> impl Future<Item = (), Error = ()> {
 
 fn gather_metadata(
     mod_file: Modfile,
-<<<<<<< HEAD
-    client: &Client,
-) -> impl Future<Item = (Chunk, String), Error = ()> {
-=======
     client: Arc<Client>,
 ) -> impl Future<Item = (String, String, String), Error = ()> {
->>>>>>> md5_checksum
     let url = format!(
         "https://minecraft.curseforge.com/projects/{0}/files/{1}",
         mod_file.projectID, mod_file.fileID
