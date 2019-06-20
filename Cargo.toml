@@ -1,8 +1,9 @@
 [package]
 name = "curse-downloader-rs"
-version = "0.1.0"
-authors = ["Rafa≈Ç Opi≈Çowski <rafalopilowski1@outlook.com>"]
+version = "2.0.0"
+authors = ["Rafa≥ Opi≥owski <rafalopilowski1@outlook.com>"]
 edition = "2018"
+features = ["rustls-tls"]
 
 [dependencies]
 serde="*"
@@ -13,8 +14,8 @@ tokio="*"
 futures="*"
 bytes = "*"
 regex="*"
+rustls="*"
 
-[profile.release]
-lto = true
-codegen-units = 1
-opt-level = 'z'
+md-5 = "0.8.0"
+kuchiki="*"
+tendril="*"

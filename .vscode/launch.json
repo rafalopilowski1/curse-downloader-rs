@@ -8,10 +8,12 @@
       "name": "(Windows) Launch",
       "type": "cppvsdbg",
       "request": "launch",
-      "program": "${workspaceFolder}/target/debug/curse-downloader-rs.exe",
-      "args": [],
+      "program": "./target/debug/curse-downloader-rs",
+      "args": [
+        "./target/debug/manifest.json"
+      ],
       "stopAtEntry": false,
-      "cwd": "${workspaceFolder}/target/debug/",
+      "cwd": "${workspaceFolder}",
       "environment": [],
       "externalConsole": true
     }
