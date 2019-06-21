@@ -12,16 +12,19 @@ extern crate tokio;
 
 use std::env;
 use std::error::Error;
-use std::io::BufReader;
+use std::io::{BufReader, ErrorKind};
 use std::ops::Add;
 use std::sync::Arc;
 
 use md5::{Digest, Md5};
 use reqwest::r#async::*;
+use tendril::fmt::Slice;
 use tendril::stream::TendrilSink;
+use tokio::fs::File;
 use tokio::prelude::future::Either;
 use tokio::prelude::*;
 
+use crate::futures::Stream;
 use crate::tendril::SliceExt;
 
 #[derive(Deserialize)]
@@ -77,12 +80,6 @@ fn main() {
         }
         Ok(())
     }));
-}
-
-fn save_file(mut file: tokio::fs::File, chunk: Chunk) -> impl Future<Item = (), Error = ()> {
-    file.write_all(&chunk)
-        .into_future()
-        .map_err(|e| eprintln!("{:?}", e))
 }
 
 fn done_print(file_path: String) -> impl Future<Item = (), Error = ()> {
@@ -153,19 +150,27 @@ fn check_integrity(
         .map_err(|e| eprintln!("{:?}", e))
 }
 
-fn download_mod_file(url: String, client: Arc<Client>) -> impl Future<Item = Chunk, Error = ()> {
+fn download_mod_file(url: String, client: Arc<Client>) -> impl Future<Item = Response, Error = ()> {
     let url_to_download = url.add("/download");
     client
         .get(&url_to_download)
         .send()
-        .and_then(move |response| {
-            response
-                .into_body()
-                .from_err()
-                .concat2()
-                .and_then(|body| Ok(body))
-        })
+        .and_then(Ok)
         .map_err(|e| eprintln!("{:?}", e))
+}
+
+pub fn save_file(file: File, response: Response) -> impl Future<Item = (), Error = ()> {
+    let (_, writer) = file.split();
+    let stream = response
+        .into_body()
+        .from_err::<reqwest::Error>()
+        .map_err(|e| std::io::Error::new(ErrorKind::Other, e));
+
+    let sink = tokio::codec::FramedWrite::new(writer, tokio::codec::BytesCodec::new())
+        .with(|byte: reqwest::r#async::Chunk| Ok::<_, std::io::Error>(byte.as_bytes()[..].into()));
+    sink.send_all(stream)
+        .and_then(|_| Ok(()).into_future())
+        .map_err(|e| eprintln!("{}", e))
 }
 
 #[cfg(test)]
