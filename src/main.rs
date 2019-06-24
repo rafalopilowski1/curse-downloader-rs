@@ -10,6 +10,8 @@ extern crate serde_json;
 extern crate tendril;
 extern crate tokio;
 
+use core::borrow::Borrow;
+use std::borrow::Cow;
 use std::env;
 use std::error::Error;
 use std::io::{BufReader, ErrorKind};
@@ -81,7 +83,7 @@ fn main() {
     }));
 }
 
-fn done_print(file_path: String) -> impl Future<Item = (), Error = ()> {
+fn done_print(file_path: Cow<str>) -> impl Future<Item = (), Error = ()> {
     println!("{} <- Done!", file_path);
     Ok(()).into_future()
 }
@@ -91,17 +93,17 @@ fn already() -> impl Future<Item = (), Error = ()> {
     Ok(()).into_future()
 }
 
-fn gather_metadata(
+fn gather_metadata<'a>(
     mod_file: Modfile,
     client: Arc<Client>,
-) -> impl Future<Item = (String, String, String), Error = ()> {
-    let url = format!(
+) -> impl Future<Item = (Cow<'a, str>, Cow<'a, str>, Cow<'a, str>), Error = ()> {
+    let url = std::borrow::Cow::from(format!(
         "https://minecraft.curseforge.com/projects/{0}/files/{1}",
         mod_file.projectID, mod_file.fileID
-    );
+    ));
 
     client
-        .get(&url)
+        .get(url.borrow() as &str)
         .send()
         .and_then(move |response| {
             let error_mes = format!("Error while parsing HTML - {}", &response.url());
@@ -112,27 +114,30 @@ fn gather_metadata(
                 .and_then(move |body| {
                     let bytes = body.to_tendril();
                     let html = kuchiki::parse_html().from_utf8().one(bytes);
-                    let name_dom = html
-                        .select_first(".info-data.overflow-tip")
-                        .expect(&error_mes)
-                        .text_contents();
-                    let md5 = html.select_first(".md5").expect(&error_mes).text_contents();
+                    let name_dom = std::borrow::Cow::from(
+                        html.select_first(".info-data.overflow-tip")
+                            .expect(&error_mes)
+                            .text_contents(),
+                    );
+                    let md5 = std::borrow::Cow::from(
+                        html.select_first(".md5").expect(&error_mes).text_contents(),
+                    );
                     Ok((name_dom, md5, url))
                 })
         })
         .map_err(|e| eprintln!("{:?}", e))
 }
 
-fn check_integrity(
-    name_dom: String,
-    md5: String,
-) -> impl Future<Item = (Option<tokio::fs::File>, Option<String>), Error = ()> {
-    let path = format!("./mods/{}", name_dom);
+fn check_integrity<'a>(
+    name_dom: Cow<'a, str>,
+    md5: Cow<'a, str>,
+) -> impl Future<Item = (Option<tokio::fs::File>, Option<Cow<'a, str>>), Error = ()> {
+    let path = Cow::from(format!("./mods/{}", name_dom));
     tokio::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
-        .open(path)
+        .open(path.into_owned())
         .and_then(move |mut file| {
             let mut file_bytes: Vec<u8> = vec![];
             file.read_buf(&mut file_bytes).and_then(move |_| {
@@ -147,10 +152,13 @@ fn check_integrity(
         .map_err(|e| eprintln!("{:?}", e))
 }
 
-fn download_mod_file(url: String, client: Arc<Client>) -> impl Future<Item = Response, Error = ()> {
+fn download_mod_file(
+    url: Cow<str>,
+    client: Arc<Client>,
+) -> impl Future<Item = Response, Error = ()> {
     let url_to_download = url.add("/download");
     client
-        .get(&url_to_download)
+        .get(url_to_download.borrow() as &str)
         .send()
         .and_then(Ok)
         .map_err(|e| eprintln!("{:?}", e))
