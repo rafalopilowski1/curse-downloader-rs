@@ -16,7 +16,6 @@ use std::io::{BufReader, ErrorKind};
 use std::ops::Add;
 use std::sync::Arc;
 
-use md5::{Digest, Md5};
 use reqwest::r#async::*;
 use tendril::fmt::Slice;
 use tendril::stream::TendrilSink;
@@ -137,9 +136,7 @@ fn check_integrity(
         .and_then(move |mut file| {
             let mut file_bytes: Vec<u8> = vec![];
             file.read_buf(&mut file_bytes).and_then(move |_| {
-                let mut hasher = Md5::new();
-                hasher.input(file_bytes);
-                let result = hasher.result();
+                let result = md5::compute(file_bytes);
                 if md5 == format!("{:x}", result) {
                     Ok((None, None))
                 } else {
@@ -178,8 +175,6 @@ mod tests {
     use std::error::Error;
     use std::io::Read;
 
-    use md5::{Digest, Md5};
-
     #[test]
     fn create_dir_and_file() {
         if let Err(e) = std::fs::create_dir("mods") {
@@ -200,18 +195,17 @@ mod tests {
 
     #[test]
     fn compare_md5() {
-        let mut file = match std::fs::File::open("./mods/EnderIO-1.10.2-3.1.193.jar") {
-            Ok(f) => f,
-            Err(e) => panic!("Error (opening file): {}", e.description()),
-        };
+        let mut file =
+            match std::fs::File::open("target/release/mods/astralsorcery-1.12.2-1.10.12.jar") {
+                Ok(f) => f,
+                Err(e) => panic!("Error (opening file): {}", e.description()),
+            };
         let mut bytes: Vec<u8> = vec![];
         if let Err(e) = file.read_to_end(&mut bytes) {
             panic!("Error (reading file): {}", e.description())
         }
 
-        let mut hasher = Md5::new();
-        hasher.input(bytes);
-        let result = hasher.result();
-        assert_eq!("a74fae6755603db91c62a55ad252db20", format!("{:x}", result));
+        let result = md5::compute(bytes);
+        assert_eq!("92a9714b398f9e31955a9e97ca3d7f34", format!("{:x}", result));
     }
 }
