@@ -1,6 +1,5 @@
 extern crate futures;
 extern crate kuchiki;
-extern crate md5;
 extern crate regex;
 extern crate reqwest;
 extern crate serde;
@@ -15,18 +14,15 @@ use std::borrow::Cow;
 use std::env;
 use std::error::Error;
 use std::io::{BufReader, ErrorKind};
-use std::ops::Add;
 use std::sync::Arc;
 
+use regex::Regex;
 use reqwest::r#async::*;
 use tendril::fmt::Slice;
-use tendril::stream::TendrilSink;
 use tokio::fs::File;
-use tokio::prelude::future::Either;
 use tokio::prelude::*;
 
 use crate::futures::Stream;
-use crate::tendril::SliceExt;
 
 #[derive(Deserialize)]
 struct Modpack {
@@ -56,107 +52,51 @@ fn main() {
     println!("Gathered data. Downloading modfiles...");
     tokio::run(futures::lazy(move || {
         for mod_file in mod_pack.files {
-            let client_clone = client.clone();
-            tokio::spawn(gather_metadata(mod_file, client_clone.clone()).and_then(
-                move |(name_dom, md5, url)| {
-                    check_integrity(name_dom, md5).and_then(
-                        move |(file_option, file_path_option)| {
-                            if file_option.is_some() {
-                                let file = file_option.unwrap();
-                                let file_path = file_path_option.unwrap();
-
-                                Either::A(
-                                    download_mod_file(url, client_clone.clone())
-                                        .and_then(move |chunk| save_file(file, chunk))
-                                        .and_then(move |_| done_print(file_path))
-                                        .and_then(|_| Ok(())),
-                                )
-                            } else {
-                                Either::B(already().and_then(|_| Ok(())))
-                            }
-                        },
-                    )
-                },
-            ));
+            tokio::spawn(
+                download_mod_file(mod_file, client.clone()).and_then(|response| {
+                    let url = Cow::from(response.url().as_str());
+                    let regex = Regex::new("(?:[^/]+)$").expect("error: creating Regex object");
+                    let match_regex = Cow::from(format!(
+                        "./mods/{}",
+                        regex
+                            .find(url.borrow())
+                            .expect("error: url not found - bad regex syntax")
+                            .as_str(),
+                    ));
+                    let body = response.into_body();
+                    create_file(match_regex.clone())
+                        .and_then(|file| save_file(file, body))
+                        .and_then(move |_| done_print(match_regex))
+                        .and_then(|_| Ok(()))
+                }),
+            );
         }
         Ok(())
     }));
 }
 
-fn done_print(file_path: Cow<str>) -> impl Future<Item = (), Error = ()> {
-    println!("{} <- Done!", file_path);
+fn done_print(path: Cow<str>) -> impl Future<Item = (), Error = ()> {
+    println!("{} -> Done!", path);
     Ok(()).into_future()
 }
 
-fn already() -> impl Future<Item = (), Error = ()> {
-    println!("Already downloaded!");
-    Ok(()).into_future()
-}
-
-fn gather_metadata<'a>(
-    mod_file: Modfile,
-    client: Arc<Client>,
-) -> impl Future<Item = (Cow<'a, str>, Cow<'a, str>, Cow<'a, str>), Error = ()> {
-    let url = std::borrow::Cow::from(format!(
-        "https://minecraft.curseforge.com/projects/{0}/files/{1}",
-        mod_file.projectID, mod_file.fileID
-    ));
-
-    client
-        .get(url.borrow() as &str)
-        .send()
-        .and_then(move |response| {
-            let error_mes = format!("Error while parsing HTML - {}", &response.url());
-            response
-                .into_body()
-                .from_err()
-                .concat2()
-                .and_then(move |body| {
-                    let bytes = body.to_tendril();
-                    let html = kuchiki::parse_html().from_utf8().one(bytes);
-                    let name_dom = std::borrow::Cow::from(
-                        html.select_first(".info-data.overflow-tip")
-                            .expect(&error_mes)
-                            .text_contents(),
-                    );
-                    let md5 = std::borrow::Cow::from(
-                        html.select_first(".md5").expect(&error_mes).text_contents(),
-                    );
-                    Ok((name_dom, md5, url))
-                })
-        })
-        .map_err(|e| eprintln!("{:?}", e))
-}
-
-fn check_integrity<'a>(
-    name_dom: Cow<'a, str>,
-    md5: Cow<'a, str>,
-) -> impl Future<Item = (Option<tokio::fs::File>, Option<Cow<'a, str>>), Error = ()> {
-    let path = Cow::from(format!("./mods/{}", name_dom));
-    tokio::fs::OpenOptions::new()
+fn create_file(path: Cow<str>) -> impl Future<Item = std::fs::File, Error = ()> {
+    let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
-        .open(path.into_owned())
-        .and_then(move |mut file| {
-            let mut file_bytes: Vec<u8> = vec![];
-            file.read_buf(&mut file_bytes).and_then(move |_| {
-                let result = md5::compute(file_bytes);
-                if md5 == format!("{:x}", result) {
-                    Ok((None, None))
-                } else {
-                    Ok((Some(file), Some(name_dom)))
-                }
-            })
-        })
-        .map_err(|e| eprintln!("{:?}", e))
+        .open(path.borrow() as &str);
+    file.into_future().map_err(|e| eprintln!("{:?}", e))
 }
 
 fn download_mod_file(
-    url: Cow<str>,
+    mod_file: Modfile,
     client: Arc<Client>,
 ) -> impl Future<Item = Response, Error = ()> {
-    let url_to_download = url.add("/download");
+    let url_to_download = Cow::from(format!(
+        "https://www.curseforge.com/minecraft/modpacks/{0}/download/{1}/file",
+        mod_file.projectID, mod_file.fileID
+    ));
     client
         .get(url_to_download.borrow() as &str)
         .send()
@@ -164,17 +104,17 @@ fn download_mod_file(
         .map_err(|e| eprintln!("{:?}", e))
 }
 
-pub fn save_file(file: File, response: Response) -> impl Future<Item = (), Error = ()> {
+pub fn save_file(file: std::fs::File, body: Decoder) -> impl Future<Item = (), Error = ()> {
+    let file = tokio::fs::File::from_std(file);
     let (_, writer) = file.split();
-    let stream = response
-        .into_body()
+    let stream = body
         .from_err::<reqwest::Error>()
         .map_err(|e| std::io::Error::new(ErrorKind::Other, e));
 
     let sink = tokio::codec::FramedWrite::new(writer, tokio::codec::BytesCodec::new())
         .with(|byte: reqwest::r#async::Chunk| Ok::<_, std::io::Error>(byte.as_bytes()[..].into()));
     sink.send_all(stream)
-        .and_then(|_| Ok(()).into_future())
+        .and_then(|_| Ok(()))
         .map_err(|e| eprintln!("{}", e))
 }
 
@@ -201,19 +141,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn compare_md5() {
-        let mut file =
-            match std::fs::File::open("target/release/mods/astralsorcery-1.12.2-1.10.12.jar") {
-                Ok(f) => f,
-                Err(e) => panic!("Error (opening file): {}", e.description()),
-            };
-        let mut bytes: Vec<u8> = vec![];
-        if let Err(e) = file.read_to_end(&mut bytes) {
-            panic!("Error (reading file): {}", e.description())
-        }
-
-        let result = md5::compute(bytes);
-        assert_eq!("92a9714b398f9e31955a9e97ca3d7f34", format!("{:x}", result));
-    }
 }
