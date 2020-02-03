@@ -9,17 +9,16 @@ extern crate serde_json;
 extern crate tendril;
 extern crate tokio;
 
-use core::borrow::Borrow;
-use std::borrow::Cow;
-use std::env;
-use std::error::Error;
-use std::io::{BufReader, ErrorKind};
-use std::sync::Arc;
+use std::{
+    borrow::Cow,
+    env,
+    error::Error,
+    io::{BufReader, BufWriter, ErrorKind},
+    sync::Arc,
+};
 
-use regex::Regex;
 use reqwest::r#async::*;
 use tendril::fmt::Slice;
-use tokio::fs::File;
 use tokio::prelude::*;
 
 use crate::futures::Stream;
@@ -29,16 +28,16 @@ struct Modpack {
     files: Vec<Modfile>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct Modfile {
     projectID: serde_json::Number,
     fileID: serde_json::Number,
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = env::args().collect();
     let path: &str = &args[1];
-    let file = std::fs::File::open(path).expect("opening manifest.json failed!");
+    let file = std::fs::File::open(path)?;
     println!("Manifest opened!");
     if let Err(e) = std::fs::create_dir("mods") {
         match e.kind() {
@@ -47,98 +46,112 @@ fn main() {
         }
     }
     let buf_reader = BufReader::new(file);
-    let client = Arc::new(Client::new());
-    let mod_pack: Modpack = serde_json::from_reader(buf_reader).unwrap();
+    let client = Arc::new(
+        Client::builder()
+            .cookie_store(true)
+            .gzip(true)
+            .tcp_nodelay()
+            .build()
+            .unwrap(),
+    );
+    println!("{:#?}", client);
+    let mod_pack: Modpack = serde_json::from_reader(buf_reader)?;
     println!("Gathered data. Downloading modfiles...");
-    tokio::run(futures::lazy(move || {
-        for mod_file in mod_pack.files {
-            tokio::spawn(
-                download_mod_file(mod_file, client.clone()).and_then(|response| {
-                    let url = Cow::from(response.url().as_str());
-                    let regex = Regex::new("(?:[^/]+)$").expect("error: creating Regex object");
-                    let match_regex = Cow::from(format!(
-                        "./mods/{}",
-                        regex
-                            .find(url.borrow())
-                            .expect("error: url not found - bad regex syntax")
-                            .as_str(),
-                    ));
-                    let body = response.into_body();
-                    create_file(match_regex.clone())
-                        .and_then(|file| save_file(file, body))
-                        .and_then(move |_| done_print(match_regex))
-                        .and_then(|_| Ok(()))
-                }),
-            );
-        }
-        Ok(())
-    }));
+    tokio::run(
+        stream::iter_ok(mod_pack.files)
+            .take(1)
+            .for_each(move |mod_file| {
+                let client = client.clone();
+                tokio::spawn(
+                    get_cookie(client.clone(), mod_file.clone())
+                        .and_then(move |cookie| {
+                            println!("{:#?}", &cookie);
+                            download_mod_file(mod_file, client, cookie)
+                        })
+                        .and_then(|response| {
+                            println!("{:#?}", &response);
+                            let url: String = "./mods/file.html".parse().unwrap();
+                            let body = response.into_body();
+                            create_file(url.clone())
+                                .and_then(|file| save_file(file, body))
+                                .and_then(move |_| done_print(url))
+                                .and_then(|_| Ok(()))
+                        }),
+                );
+                Ok(())
+            }),
+    );
+
+    Ok(())
 }
 
-fn done_print(path: Cow<str>) -> impl Future<Item = (), Error = ()> {
+fn get_cookie(client: Arc<Client>, mod_file: Modfile) -> impl Future<Item = Response, Error = ()> {
+    let url_to_download = Cow::from(format!(
+        "https://minecraft.curseforge.com/projects/{0}",
+        mod_file.projectID
+    ));
+
+    client
+        .get(url_to_download.as_ref())
+        .send()
+        .and_then(Ok)
+        .map_err(|e| eprintln!("{:?}", e))
+}
+
+fn done_print<S>(path: S) -> impl Future<Item = (), Error = ()>
+where
+    S: std::fmt::Display,
+{
     println!("{} -> Done!", path);
     Ok(()).into_future()
 }
 
-fn create_file(path: Cow<str>) -> impl Future<Item = std::fs::File, Error = ()> {
+fn create_file<S>(path: S) -> impl Future<Item = std::fs::File, Error = ()>
+where
+    S: AsRef<str>,
+{
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
-        .open(path.borrow() as &str);
+        .open(path.as_ref());
     file.into_future().map_err(|e| eprintln!("{:?}", e))
 }
 
 fn download_mod_file(
     mod_file: Modfile,
     client: Arc<Client>,
+    cookie: Response,
 ) -> impl Future<Item = Response, Error = ()> {
     let url_to_download = Cow::from(format!(
-        "https://www.curseforge.com/minecraft/modpacks/{0}/download/{1}/file",
-        mod_file.projectID, mod_file.fileID
+        "{0}/download/{1}/file",
+        cookie.url().as_str(),
+        mod_file.fileID
     ));
+    let request = client.get(url_to_download.as_ref()).build().unwrap();
+    println!("{:#?}", request);
     client
-        .get(url_to_download.borrow() as &str)
-        .send()
+        .execute(request)
         .and_then(Ok)
         .map_err(|e| eprintln!("{:?}", e))
 }
 
 pub fn save_file(file: std::fs::File, body: Decoder) -> impl Future<Item = (), Error = ()> {
+    // creating file
     let file = tokio::fs::File::from_std(file);
+    // getting write-only access
     let (_, writer) = file.split();
+    // buffering chunks of data (less sys-calls)
+    let writer = BufWriter::new(writer);
+    // unifying all types of `reqwest::Error` in stream of futures from HTTP client response stream to `io::Error(ErrorKind::Other)` (temporary measure)
     let stream = body
         .from_err::<reqwest::Error>()
-        .map_err(|e| std::io::Error::new(ErrorKind::Other, e));
-
+        .map_err(|error| std::io::Error::new(ErrorKind::Other, error));
+    // creating async writes via `tokio::codec::FramedWrite`, which debundles bytes from Future container
     let sink = tokio::codec::FramedWrite::new(writer, tokio::codec::BytesCodec::new())
         .with(|byte: reqwest::r#async::Chunk| Ok::<_, std::io::Error>(byte.as_bytes()[..].into()));
+    // sending all packets of bytes from `Stream` to `Sink` (headed to file)
     sink.send_all(stream)
         .and_then(|_| Ok(()))
         .map_err(|e| eprintln!("{}", e))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::error::Error;
-    use std::io::Read;
-
-    #[test]
-    fn create_dir_and_file() {
-        if let Err(e) = std::fs::create_dir("mods") {
-            match e.kind() {
-                std::io::ErrorKind::AlreadyExists => (),
-                _ => panic!("Error: {:?}", e.description()),
-            }
-        }
-        if let Err(e) = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open("./mods/test.jar")
-        {
-            panic!("Error: {:?}", e.description())
-        }
-    }
-
 }
