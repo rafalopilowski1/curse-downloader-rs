@@ -13,3 +13,4 @@ Cargo.lock
 **/*.rs.bk
 /.idea
 **/*.iml
+debug.log
