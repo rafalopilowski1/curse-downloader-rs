@@ -5,13 +5,11 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "(Windows) Launch",
-      "type": "cppvsdbg",
+      "type": "lldb",
       "request": "launch",
-      "program": "./target/debug/curse-downloader-rs",
-      "args": [
-        "./target/debug/manifest.json"
-      ],
+      "name": "Launch",
+      "program": "./target/debug/curse-downloader-rs.exe",
+      "args": ["./manifest.json"],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}",
       "environment": [],
