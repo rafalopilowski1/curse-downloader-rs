@@ -2,19 +2,18 @@
 name = "curse-downloader-rs"
 version = "3.0.0"
 authors = ["Rafał Opiłowski <rafalopilowski1@outlook.com>"]
-features = ["rustls-tls"]
 edition = "2018"
 
 [dependencies]
-serde="*"
-serde_derive="*"
-serde_json="*"
-reqwest="*"
-tokio="*"
-futures="*"
-bytes = "*"
-regex="*"
-rustls="*"
-md5 = "*"
-kuchiki="*"
-tendril="*"
+serde={version="1.0.127", features =["derive"]}
+serde_json="1.0.66"
+reqwest={version="0.11.4", features=["stream"]}
+tokio={version="1.10.0",features =["full"]}
+tokio-util = "0.6.7"
+futures="0.3.16"
+bytes = "1.0.1"
+regex="1.5.4"
+rustls="0.19.1"
+md5 = "0.7.0"
+kuchiki="0.8.1"
+tendril="0.4.2"

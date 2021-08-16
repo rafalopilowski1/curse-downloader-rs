@@ -1,27 +1,15 @@
-extern crate futures;
-extern crate kuchiki;
-extern crate regex;
-extern crate reqwest;
-extern crate serde;
-#[macro_use]
-extern crate serde_derive;
-extern crate serde_json;
-extern crate tendril;
-extern crate tokio;
-
+use futures::{SinkExt, StreamExt, TryStreamExt};
+use reqwest::Client;
+use serde::Deserialize;
 use std::{
     borrow::Cow,
     env,
-    error::Error,
-    io::{BufReader, BufWriter, ErrorKind},
+    io::{ErrorKind, Sink},
+    pin::Pin,
     sync::Arc,
 };
-
-use reqwest::r#async::*;
-use tendril::fmt::Slice;
-use tokio::prelude::*;
-
-use crate::futures::Stream;
+use tokio::io::*;
+use tokio_util::*;
 
 #[derive(Deserialize)]
 struct Modpack {
@@ -34,124 +22,61 @@ struct Modfile {
     fileID: serde_json::Number,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() {
     let args: Vec<_> = env::args().collect();
     let path: &str = &args[1];
-    let file = std::fs::File::open(path)?;
+    let file = std::fs::File::open(path).expect("File error");
     println!("Manifest opened!");
     if let Err(e) = std::fs::create_dir("mods") {
         match e.kind() {
             std::io::ErrorKind::AlreadyExists => println!("'mods' folder already exists..."),
-            _ => eprintln!("Error: {:?}", e.description()),
+            _ => eprintln!("Error: {:?}", e.to_string()),
         }
     }
-    let buf_reader = BufReader::new(file);
-    let client = Arc::new(
-        Client::builder()
-            .cookie_store(true)
-            .gzip(true)
-            .tcp_nodelay()
-            .build()
-            .unwrap(),
-    );
-    println!("{:#?}", client);
-    let mod_pack: Modpack = serde_json::from_reader(buf_reader)?;
+    let buf_reader = std::io::BufReader::new(file);
+    let client = Client::new();
+    let mod_pack: Modpack = serde_json::from_reader(buf_reader).expect("Parsing error!");
     println!("Gathered data. Downloading modfiles...");
-    tokio::run(
-        stream::iter_ok(mod_pack.files)
-            .take(1)
-            .for_each(move |mod_file| {
-                let client = client.clone();
-                tokio::spawn(
-                    get_cookie(client.clone(), mod_file.clone())
-                        .and_then(move |cookie| {
-                            println!("{:#?}", &cookie);
-                            download_mod_file(mod_file, client, cookie)
-                        })
-                        .and_then(|response| {
-                            println!("{:#?}", &response);
-                            let url: String = "./mods/file.html".parse().unwrap();
-                            let body = response.into_body();
-                            create_file(url.clone())
-                                .and_then(|file| save_file(file, body))
-                                .and_then(move |_| done_print(url))
-                                .and_then(|_| Ok(()))
-                        }),
-                );
-                Ok(())
-            }),
+    futures::stream::iter(mod_pack.files)
+        .for_each_concurrent(None, |mod_file| {
+            let client = client.clone();
+            async move {
+                let response = get_mod_file_response(&mod_file, &client).await;
+                let mod_to_save = create_file("mod.jar").await.expect("creating file error");
+                save_mod_to_file(response, mod_to_save).await
+            }
+        })
+        .await;
+}
+
+async fn save_mod_to_file(response: reqwest::Response, mod_to_save: tokio::fs::File) {
+    let mut file_stream = response
+        .bytes_stream()
+        .map_err(|_| std::io::Error::new(ErrorKind::Other, ""));
+    let buf_writer = tokio::io::BufWriter::new(mod_to_save);
+    let mut sink =
+        tokio_util::codec::FramedWrite::new(buf_writer, tokio_util::codec::BytesCodec::new());
+    sink.send_all(&mut file_stream).await;
+}
+
+async fn get_mod_file_response(mod_file: &Modfile, client: &Client) -> reqwest::Response {
+    let url = format!(
+        "https://minecraft.curseforge.com/projects/{0}/download/{1}/file",
+        mod_file.projectID, mod_file.fileID
     );
-
-    Ok(())
+    let request = client.clone().get(url).build().expect("request error");
+    let response = client.execute(request).await.expect("response error");
+    response
 }
-
-fn get_cookie(client: Arc<Client>, mod_file: Modfile) -> impl Future<Item = Response, Error = ()> {
-    let url_to_download = Cow::from(format!(
-        "https://minecraft.curseforge.com/projects/{0}",
-        mod_file.projectID
-    ));
-
-    client
-        .get(url_to_download.as_ref())
-        .send()
-        .and_then(Ok)
-        .map_err(|e| eprintln!("{:?}", e))
-}
-
-fn done_print<S>(path: S) -> impl Future<Item = (), Error = ()>
-where
-    S: std::fmt::Display,
-{
-    println!("{} -> Done!", path);
-    Ok(()).into_future()
-}
-
-fn create_file<S>(path: S) -> impl Future<Item = std::fs::File, Error = ()>
+async fn create_file<S>(path: S) -> Result<tokio::fs::File>
 where
     S: AsRef<str>,
 {
-    let file = std::fs::OpenOptions::new()
+    tokio::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
-        .open(path.as_ref());
-    file.into_future().map_err(|e| eprintln!("{:?}", e))
-}
-
-fn download_mod_file(
-    mod_file: Modfile,
-    client: Arc<Client>,
-    cookie: Response,
-) -> impl Future<Item = Response, Error = ()> {
-    let url_to_download = Cow::from(format!(
-        "{0}/download/{1}/file",
-        cookie.url().as_str(),
-        mod_file.fileID
-    ));
-    let request = client.get(url_to_download.as_ref()).build().unwrap();
-    println!("{:#?}", request);
-    client
-        .execute(request)
-        .and_then(Ok)
-        .map_err(|e| eprintln!("{:?}", e))
-}
-
-pub fn save_file(file: std::fs::File, body: Decoder) -> impl Future<Item = (), Error = ()> {
-    // creating file
-    let file = tokio::fs::File::from_std(file);
-    // getting write-only access
-    let (_, writer) = file.split();
-    // buffering chunks of data (less sys-calls)
-    let writer = BufWriter::new(writer);
-    // unifying all types of `reqwest::Error` in stream of futures from HTTP client response stream to `io::Error(ErrorKind::Other)` (temporary measure)
-    let stream = body
-        .from_err::<reqwest::Error>()
-        .map_err(|error| std::io::Error::new(ErrorKind::Other, error));
-    // creating async writes via `tokio::codec::FramedWrite`, which debundles bytes from Future container
-    let sink = tokio::codec::FramedWrite::new(writer, tokio::codec::BytesCodec::new())
-        .with(|byte: reqwest::r#async::Chunk| Ok::<_, std::io::Error>(byte.as_bytes()[..].into()));
-    // sending all packets of bytes from `Stream` to `Sink` (headed to file)
-    sink.send_all(stream)
-        .and_then(|_| Ok(()))
-        .map_err(|e| eprintln!("{}", e))
+        .open(path.as_ref())
+        .await
 }
